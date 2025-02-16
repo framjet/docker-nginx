@@ -1,0 +1,178 @@
+{{- $globals := dict }}
+{{- $_ := set $globals "Env" $.Env }}
+
+{{- $config := dict }}
+{{- /* Nginx Core configuration */}}
+{{- $_ := set $config "nginx_user" ($globals.Env.NGINX_USER | default "nginx" )}}
+{{- $_ := set $config "nginx_pid_file" ($globals.Env.NGINX_PID_FILE | default "/var/run/nginx.pid" )}}
+{{- $_ := set $config "nginx_modules" ($globals.Env.NGINX_MODULES | default "" )}}
+{{- $_ := set $config "nginx_modules_custom" ($globals.Env.NGINX_MODULES_CUSTOM | default "" )}}
+{{- /* OpenTelemetry configuration */}}
+{{- $_ := set $config "nginx_otel" ($globals.Env.NGINX_OTEL | default "false" | parseBool )}}
+{{- $_ := set $config "nginx_otel_endpoint" ($globals.Env.NGINX_OTEL_ENDPOINT | default "host.docker.internal:4317" )}}
+{{- $_ := set $config "nginx_otel_interval" ($globals.Env.NGINX_OTEL_INTERVAL | default "5s" )}}
+{{- $_ := set $config "nginx_otel_batch_size" ($globals.Env.NGINX_OTEL_BATCH_SIZE | default "512" )}}
+{{- $_ := set $config "nginx_otel_batch_count" ($globals.Env.NGINX_OTEL_BATCH_COUNT | default "4" )}}
+{{- $_ := set $config "nginx_otel_batch_count" ($globals.Env.NGINX_OTEL_BATCH_COUNT | default "4" )}}
+{{- /* Status endpoint */}}
+{{- $_ := set $config "nginx_status" ($globals.Env.NGINX_STATUS | default "true" | parseBool )}}
+{{- $_ := set $config "nginx_status_port" ($globals.Env.NGINX_STATUS_PORT | default "90" )}}
+{{- $_ := set $config "nginx_status_server_name" ($globals.Env.NGINX_STATUS_SERVER_NAME | default "localhost" )}}
+{{- $_ := set $config "nginx_status_path" ($globals.Env.NGINX_STATUS_PATH | default "/status" )}}
+{{- $_ := set $config "nginx_status_allow" ($globals.Env.NGINX_STATUS_ALLOW | default "" )}}
+{{- $_ := set $config "nginx_status_deny" ($globals.Env.NGINX_STATUS_DENY | default "" )}}
+{{- /* Logging configuration */}}
+{{- $_ := set $config "nginx_log_access_format" ($globals.Env.NGINX_LOG_ACCESS_FORMAT | default "main" )}}
+{{- $_ := set $config "nginx_log_access_path" ($globals.Env.NGINX_LOG_ACCESS_PATH | default "/var/log/nginx/access.log" )}}
+{{- $_ := set $config "nginx_log_access" ($globals.Env.NGINX_LOG_ACCESS | default (printf "%s %s" $config.nginx_log_access_path $config.nginx_log_access_format) )}}
+{{- $_ := set $config "nginx_log_error_level" ($globals.Env.NGINX_LOG_ERROR_LEVEL | default "notice" )}}
+{{- $_ := set $config "nginx_log_error_path" ($globals.Env.NGINX_LOG_ERROR_PATH | default "/var/log/nginx/error.log" )}}
+{{- $_ := set $config "nginx_log_error" ($globals.Env.NGINX_LOG_ERROR | default (printf "%s %s" $config.nginx_log_error_path $config.nginx_log_error_level) )}}
+
+
+{{- range $key, $value := (split "," $config.nginx_modules)}}
+{{ if ne $value "" }}
+load_module modules/{{$value}}.so;
+{{- end}}
+{{- end}}
+{{- range $key, $value := (split "," $config.nginx_modules_custom)}}
+{{ if ne $value "" }}
+load_module modules/{{$value}}.so;
+{{- end}}
+{{- end}}
+
+{{- if $config.nginx_otel }}
+load_module modules/ngx_otel_module.so;
+{{- end }}
+
+{{ $logFormats := dict }}
+{{ range $key, $value := $globals.Env }}
+  {{ if hasPrefix "NGINX_LOG_FORMAT_" $key }}
+    {{ $logKey := trimPrefix "NGINX_LOG_FORMAT_" $key }}
+    {{ if not (hasSuffix "_ESCAPE" $logKey) }}  {{/* Ignore LOG_FORMAT_X_ESCAPE vars */}}
+      {{ $escapeVar := printf "NGINX_LOG_FORMAT_%s_ESCAPE" $logKey }}  {{/* Construct ESCAPE variable name */}}
+      {{ $escapeType := (index $globals.Env $escapeVar )}}  {{/* Get escape type, default to "default" */}}
+      {{ $logFormats = set $logFormats (lower $logKey) (dict "format" $value "escape" $escapeType) }}
+    {{ end }}
+  {{ end }}
+{{ end }}
+
+
+user  {{$config.nginx_user}};
+worker_processes  auto;
+
+
+error_log {{ $config.nginx_log_error }};
+pid        {{ $config.nginx_pid_file }};
+
+
+events {
+    worker_connections  1024;
+}
+
+
+http {
+{{- if $config.nginx_otel }}
+    otel_exporter {
+        endpoint {{$config.nginx_otel_endpoint}};
+        interval {{$config.nginx_otel_interval}};
+        batch_size {{$config.nginx_otel_batch_size}};
+        batch_count {{$config.nginx_otel_batch_count}};
+    }
+{{- end }}
+
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                      '$status $body_bytes_sent "$http_referer" '
+                      '"$http_user_agent" "$http_x_forwarded_for"';
+
+{{ range $key, $data := $logFormats }}
+    log_format {{ $key }}{{ if ne $data.escape "" }} escape={{$data.escape}}{{ end }} '{{ $data.format }}';
+{{ end }}
+
+    log_format cf_json escape=json '{'
+      '"message": "$remote_addr - $remote_user \\"$request\\" $status $body_bytes_sent \\"$http_referer\\" \\"$http_user_agent\\" \\"$http_x_forwarded_for\\"", '
+	    '"hostname": "$hostname", ' # Server actual hostname
+	    '"msec": "$msec", ' # request unixtime in seconds with a milliseconds resolution
+	    '"connection": "$connection", ' # connection serial number
+	    '"connection_requests": "$connection_requests", ' # number of requests made in connection
+	    '"pid": "$pid", ' # process pid
+	    '"request_id": "$request_id", ' # the unique request id
+	    '"request_length": "$request_length", ' # request length (including headers and body)
+	    '"remote_addr": "$remote_addr", ' # client IP
+	    '"remote_user": "$remote_user", ' # client HTTP username
+	    '"remote_port": "$remote_port", ' # client port
+	    '"time_local": "$time_local", '
+	    '"time_iso8601": "$time_iso8601", ' # local time in the ISO 8601 standard format
+	    '"request": "$request", ' # full path no arguments if the request
+	    '"request_uri": "$request_uri", ' # full path and arguments if the request
+	    '"args": "$args", ' # args
+	    '"status": "$status", ' # response status code
+	    '"body_bytes_sent": "$body_bytes_sent", ' # the number of body bytes exclude headers sent to a client
+	    '"bytes_sent": "$bytes_sent", ' # the number of bytes sent to a client
+	    '"http_referer": "$http_referer", ' # HTTP referer
+	    '"http_user_agent": "$http_user_agent", ' # user agent
+	    '"http_x_forwarded_for": "$http_x_forwarded_for", ' # http_x_forwarded_for
+	    '"http_host": "$http_host", ' # the request Host: header
+	    '"server_name": "$server_name", ' # the name of the vhost serving the request
+	    '"request_time": "$request_time", ' # request processing time in seconds with msec resolution
+	    '"upstream": "$upstream_addr", ' # upstream backend server for proxied requests
+	    '"upstream_connect_time": "$upstream_connect_time", ' # upstream handshake time incl. TLS
+	    '"upstream_header_time": "$upstream_header_time", ' # time spent receiving upstream headers
+	    '"upstream_response_time": "$upstream_response_time", ' # time spend receiving upstream body
+	    '"upstream_response_length": "$upstream_response_length", ' # upstream response length
+	    '"upstream_cache_status": "$upstream_cache_status", ' # cache HIT/MISS where applicable
+	    '"ssl_protocol": "$ssl_protocol", ' # TLS protocol
+	    '"ssl_cipher": "$ssl_cipher", ' # TLS cipher
+	    '"scheme": "$scheme", ' # http or https
+	    '"request_method": "$request_method", ' # request method
+	    '"server_protocol": "$server_protocol", ' # request protocol, like HTTP/1.1 or HTTP/2.0
+	    '"pipe": "$pipe", ' # “p” if request was pipelined, “.” otherwise
+	    '"gzip_ratio": "$gzip_ratio", '
+	    '"http_cf_ray": "$http_cf_ray", '
+	    '"http_cf_worker": "$http_cf_worker", '
+	    '"http_cf_request_id": "$http_cf_request_id", '
+	    '"http_cf_railgun": "$http_cf_railgun", '
+	    '"http_cf_ipcountry": "$http_cf_ipcountry", '
+	    '"http_cf_connecting_ip": "$http_cf_connecting_ip", '
+	    '"http_cf_connecting_ipv6": "$http_cf_connecting_ipv6", '
+	    '"http_accept": "$http_accept"'
+	  '}';
+
+{{/*	access_log syslog:server=host.docker.internal:54527,facility=local7,tag=nginx,severity=info cf_json;*/}}
+	access_log {{ $config.nginx_log_access }};
+{{/*    error_log syslog:server=host.docker.internal:54527,facility=local7,tag=nginx;*/}}
+
+    sendfile        on;
+    #tcp_nopush     on;
+
+    keepalive_timeout  65;
+
+    #gzip  on;
+
+{{- if $config.nginx_status }}
+     server {
+        listen       {{$config.nginx_status_port}};
+        server_name  {{$config.nginx_status_server_name}};
+        
+        access_log off;
+        
+        location {{$config.nginx_status_path}} {
+            stub_status on;
+{{- range $key, $value := (split "," $config.nginx_status_allow)}}
+{{ if ne $value "" }}
+            allow {{$value}};
+{{- end}}
+{{- end}}
+{{- range $key, $value := (split "," $config.nginx_status_deny)}}
+{{ if ne $value "" }}
+            deny {{$value}};
+{{- end}}{{- end}}
+        }
+    }
+{{- end }}
+
+    include /etc/nginx/conf.d/*.conf;
+}
