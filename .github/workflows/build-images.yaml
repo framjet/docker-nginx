@@ -146,6 +146,7 @@ jobs:
           build-args: ${{ matrix.buildArgs }}
           platforms: ${{ matrix.platforms }}
           push: true
+          target: ${{ matrix.buildTarget }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=s3,blobs_prefix=cache/${{ github.repository }}/,manifests_prefix=cache/${{ github.repository }}/,endpoint_url=${{ secrets.S3_CACHE_GHW_ENDPOINT }},access_key_id=${{ secrets.S3_CACHE_GHW_ACCESS }},secret_access_key=${{ secrets.S3_CACHE_GHW_SECRET }},region=${{ secrets.S3_CACHE_GHW_REGION }},bucket=${{ secrets.S3_CACHE_GHW_BUCKET }}

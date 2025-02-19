@@ -4,7 +4,7 @@ on:
   schedule:
     - cron: '10 */6 * * *'  # Check every 6 hours
   workflow_run:
-    workflows: [ "Build Main Images" ]
+    workflows: [Build Main Images]
     types:
       - completed
   workflow_dispatch:  # Allow manual triggers
@@ -22,7 +22,50 @@ on:
       - main
 
 jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_proceed: ${{ steps.set-result.outputs.should_proceed }}
+    steps:
+      - name: Check if previous workflow_run was successful
+        id: check_workflow_run
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            if [[ "${{ github.event.workflow_run.conclusion }}" != "success" ]]; then
+             echo "Previous workflow failed. Stopping execution."
+             echo "should_proceed=false" >> $GITHUB_ENV
+             echo "should_proceed=false" >> $GITHUB_OUTPUT
+             exit 0
+            fi
+          
+            sleep 30s
+          fi
+          echo "should_proceed=true" >> $GITHUB_ENV
+          echo "should_proceed=true" >> $GITHUB_OUTPUT
+
+      - name: Check if workflow "Build Main Images" is running
+        id: check_running_workflow
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_NAME: "Build Main Images"
+        run: |
+          RUNNING=$(gh run list --repo "${{ github.repository }}" --workflow "$WORKFLOW_NAME" --status in_progress --json conclusion -q '. | length')
+          echo "Running workflows: $RUNNING"
+          echo "running_workflows=$RUNNING" >> $GITHUB_OUTPUT
+          if [[ "$RUNNING" -ne 0 ]]; then
+            echo "Another instance of workflow '$WORKFLOW_NAME' is running (count: $RUNNING). Stopping execution."
+            echo "should_proceed=false" >> $GITHUB_ENV
+            echo "should_proceed=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "should_proceed=true" >> $GITHUB_ENV
+          echo "should_proceed=true" >> $GITHUB_OUTPUT
+        shell: bash
+
   discover-configs:
+    needs: check
+    if: needs.check.outputs.should_proceed == 'true'
     runs-on: [ self-hosted, '${{ github.repository_owner }}' ]
     outputs:
       configs: ${{ steps.find-configs.outputs.matrix }}
@@ -38,8 +81,10 @@ jobs:
           echo "matrix=$CONFIGS" >> $GITHUB_OUTPUT
 
   track:
-    needs: discover-configs
-    if: needs.discover-configs.outputs.configs != '[]'
+    needs:
+      - discover-configs
+      - check
+    if: needs.discover-configs.outputs.configs != '[]' && needs.check.outputs.should_proceed == 'true'
     runs-on: [ self-hosted, '${{ github.repository_owner }}' ]
     strategy:
       matrix:
@@ -95,9 +140,10 @@ jobs:
           ')" >> $GITHUB_OUTPUT
 
   build:
-    needs: track
+    needs:
+      - track
     name: Build ${{ matrix.imageName }}:${{ matrix.upstream.tag }} for ${{ matrix.platform }}
-    if: needs.track.outputs.matrix != '[]'
+    if: needs.track.outputs.matrix != '[]' && needs.check.outputs.should_proceed == 'true'
     runs-on: [ self-hosted, '${{ github.repository_owner }}' ]
     permissions:
       contents: write
@@ -150,6 +196,7 @@ jobs:
           build-args: ${{ matrix.buildArgs }}
           platforms: ${{ matrix.platforms }}
           push: true
+          target: ${{ matrix.buildTarget }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=s3,blobs_prefix=cache/${{ github.repository }}/,manifests_prefix=cache/${{ github.repository }}/,endpoint_url=${{ secrets.S3_CACHE_GHW_ENDPOINT }},access_key_id=${{ secrets.S3_CACHE_GHW_ACCESS }},secret_access_key=${{ secrets.S3_CACHE_GHW_SECRET }},region=${{ secrets.S3_CACHE_GHW_REGION }},bucket=${{ secrets.S3_CACHE_GHW_BUCKET }}

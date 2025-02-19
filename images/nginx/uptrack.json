@@ -1,26 +1,30 @@
 {
   "$schema": "https://github.com/framjet/docker-uptrack-action/blob/main/schema.json",
-  "namespace": "framjet",
-  "name": "nginx",
-  "platforms": [
-    "linux/amd64",
-    "linux/arm64"
-  ],
-  "upstream": {
-    "name": "nginx"
-  },
-  "filters": {
-    "oldest_tag_limit": "1year",
-    "limit_releases": 20,
-    "tags": [
-      {
-        "pattern": "(.*)-alpine-otel$",
-        "mapped": "$1"
+  "variants": [
+    {
+      "namespace": "framjet",
+      "name": "nginx",
+      "platforms": [
+        "linux/amd64",
+        "linux/arm64"
+      ],
+      "upstream": {
+        "name": "nginx"
+      },
+      "filters": {
+        "oldest_tag_limit": "1year",
+        "limit_releases": 20,
+        "tags": [
+          {
+            "pattern": "(.*)-alpine-otel$",
+            "mapped": "$1"
+          }
+        ]
+      },
+      "buildArgs": {
+        "GOENVTEMPLATOR_VERSION": "2025.2.14",
+        "WAIT4X_VERSION": "latest"
       }
-    ]
-  },
-  "buildArgs": {
-    "GOENVTEMPLATOR_VERSION": "2025.2.14",
-    "WAIT4X_VERSION": "latest"
-  }
+    }
+  ]
 }
