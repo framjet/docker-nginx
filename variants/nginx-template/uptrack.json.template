@@ -1,0 +1,20 @@
+{
+  "$schema": "https://github.com/framjet/docker-uptrack-action/blob/main/schema.json",
+  "namespace": "framjet",
+  "name": "nginx-custom",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "filters": {
+    "tags": [
+      {
+        "pattern": ".*"
+      }
+    ]
+  },
+  "upstream": {
+    "namespace": "framjet",
+    "name": "nginx"
+  }
+}
