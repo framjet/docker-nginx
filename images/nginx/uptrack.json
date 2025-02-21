@@ -16,6 +16,10 @@
         "limit_releases": 20,
         "tags": [
           {
+            "name": "mainline-alpine-otel",
+            "mapped": "latest"
+          },
+          {
             "pattern": "(.*)-alpine-otel$",
             "mapped": "$1"
           }
