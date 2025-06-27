@@ -2,7 +2,7 @@ name: "Build Main Images"
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Check every 6 hours
+    - cron: '30 */6 * * *'  # Check every 6 hours
   workflow_dispatch:  # Allow manual triggers
     inputs:
       force:
@@ -41,8 +41,6 @@ jobs:
       matrix:
         config: ${{ fromJson(needs.discover-configs.outputs.configs) }}
       fail-fast: false
-    outputs:
-      matrix: ${{ steps.add-context.outputs.matrix }}
 
     steps:
       - uses: actions/checkout@v4
@@ -74,23 +72,65 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Add context to matrix
-        id: add-context
+      - name: Add context to matrix and save to file
         if: steps.track.outputs.matrix != ''
         run: |
           CONTEXT_DIR=$(dirname "${{ matrix.config }}")
-          echo "matrix=$(echo '${{ steps.track.outputs.matrix }}' | jq --arg dir "$CONTEXT_DIR" -c '
+          MATRIX_WITH_CONTEXT=$(echo '${{ steps.track.outputs.matrix }}' | jq --arg dir "$CONTEXT_DIR" -c '
             if type == "array" then
               map(. + {"context": $dir})
             else
               [. + {"context": $dir}]
             end
-          ')" >> $GITHUB_OUTPUT
+          ')
+          
+          # Create unique filename for this job's output
+          CONFIG_HASH=$(echo "${{ matrix.config }}" | sha256sum | cut -d' ' -f1)
+          echo "$MATRIX_WITH_CONTEXT" > "matrix_${CONFIG_HASH}.json"
+
+      - name: Upload matrix artifact
+        if: steps.track.outputs.matrix != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ strategy.job-index }}
+          path: matrix_*.json
+          retention-days: 1
+
+  collect-matrices:
+    needs: track
+    runs-on: [ self-hosted, '${{ github.repository_owner }}' ]
+    outputs:
+      matrix: ${{ steps.combine.outputs.matrix }}
+    steps:
+      - name: Download all matrix artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: matrix-*
+          merge-multiple: true
+
+      - name: Combine all matrices
+        id: combine
+        run: |
+          # Combine all JSON files into a single array
+          COMBINED_MATRIX="[]"
+          for file in matrix_*.json; do
+            if [ -f "$file" ]; then
+              MATRIX_CONTENT=$(cat "$file")
+              COMBINED_MATRIX=$(echo "$COMBINED_MATRIX" "$MATRIX_CONTENT" | jq -s 'add')
+            fi
+          done
+          
+          # Properly escape the JSON for GitHub Actions output
+          echo "matrix<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMBINED_MATRIX" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "Combined matrix: $COMBINED_MATRIX"
 
   build:
-    needs: track
+    needs: collect-matrices
     name: Build ${{ matrix.imageName }}:${{ matrix.upstream.tag }} for ${{ matrix.platforms }}
-    if: needs.track.outputs.matrix != '[]'
+    if: needs.collect-matrices.outputs.matrix != '[]'
     runs-on: [ self-hosted, '${{ github.repository_owner }}' ]
     permissions:
       contents: write
@@ -98,7 +138,7 @@ jobs:
     strategy:
       max-parallel: 4
       matrix:
-        include: ${{ fromJson(needs.track.outputs.matrix) }}
+        include: ${{ fromJson(needs.collect-matrices.outputs.matrix) }}
       fail-fast: false
 
     steps:
